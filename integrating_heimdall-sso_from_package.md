@@ -51,11 +51,22 @@ import { useAuth } from "../../heimdall-sso/src/client/useAuth";
 
 ### 2.1 Install Required Dependencies
 
-The Spotlight app needs some additional dependencies:
+The Spotlight app needs additional dependencies for Heimdall SSO integration:
 
 ```bash
-npm install cookie-parser
+# Basic dependencies for server-side authentication
+npm install cookie-parser jsonwebtoken
+
+# TypeScript types
+npm install --save-dev @types/jsonwebtoken
 ```
+
+**Why these dependencies are needed:**
+- `cookie-parser`: Required for handling JWT tokens in cookies
+- `jsonwebtoken`: Core JWT functionality used by Heimdall SSO
+- `@types/jsonwebtoken`: TypeScript definitions for JWT operations
+
+**Note:** When using direct source imports, the main application must include all dependencies that the Heimdall SSO package requires, since we're not using the bundled package distribution.
 
 ### 2.2 Update server/index.ts
 
@@ -82,11 +93,12 @@ app.use(express.urlencoded({ extended: false }));
 })();
 ```
 
-**Updated server/index.ts (with Heimdall SSO):**
+**Updated server/index.ts (with Heimdall SSO - Development & Production Compatible):**
 ```typescript
 import express from "express";
 import cookieParser from "cookie-parser";
-import { initializeHeimdallSSO } from "@need4swede/heimdall-sso";
+// Use direct source import for both development and production
+import { initializeHeimdallSSO } from "../heimdall-sso/src/index.js";
 import { registerRoutes } from "./routes";
 import { setupVite } from "./vite";
 
@@ -437,13 +449,13 @@ services:
     container_name: spotlight
     build: .
     ports:
-      - "${PORT:-5000}:5000"
+      - "${FRONTEND_PORT:-6011}:${SPOTLIGHT_PORT:-5000}"
     environment:
       - NODE_ENV=production
-      - PORT=5000
+      - PORT=${SPOTLIGHT_PORT:-5000}
       - HOST=0.0.0.0
       # PostgreSQL Database (required for Heimdall SSO)
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-spotlight}
+      - DATABASE_URL=${DATABASE_URL}
 
       # Heimdall SSO Configuration
       - JWT_SECRET=${JWT_SECRET}
@@ -468,11 +480,11 @@ services:
     container_name: spotlight-postgres
     image: postgres:15-alpine
     environment:
-      - POSTGRES_DB=${POSTGRES_DB:-spotlight}
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -481,6 +493,12 @@ services:
 volumes:
   postgres_data:
 ```
+
+**Key Configuration Changes:**
+- ✅ **Flexible Port Mapping**: `FRONTEND_PORT:SPOTLIGHT_PORT` (e.g., `6011:5000`)
+- ✅ **Environment Variable Integration**: Uses `.env` file values directly
+- ✅ **Custom Database Credentials**: Supports custom PostgreSQL user/password
+- ✅ **Port Isolation**: External and internal ports can be different
 
 #### Development Configuration (`docker-compose.dev.yml`)
 
@@ -632,7 +650,7 @@ SELECT * FROM user_sessions;
 
 ### 6.5 Dockerfile Optimization
 
-The existing Dockerfile already handles the Heimdall SSO package correctly:
+The Dockerfile has been updated to properly handle the Heimdall SSO package:
 
 ```dockerfile
 # Use Node.js 20 LTS as base image
@@ -649,10 +667,13 @@ RUN npm ci
 COPY . .
 RUN mkdir -p attached_assets dist/public
 
-# Build application
+# Build heimdall-sso package first
+RUN cd heimdall-sso && npm install && npm run build
+
+# Use Docker-compatible config and build main application
 RUN cp vite.config.docker.ts vite.config.ts && npm run build
 
-# Clean cache
+# Clean cache but keep all dependencies (server needs them at runtime)
 RUN npm cache clean --force
 
 # Configure environment
@@ -664,6 +685,11 @@ ENV HOST=0.0.0.0
 # Start application
 CMD ["npm", "start"]
 ```
+
+**Key Docker Changes:**
+- ✅ **Build heimdall-sso first**: Ensures the package is built before the main application
+- ✅ **Use source imports**: Both client and server use direct source file imports
+- ✅ **Avoid package dependencies**: No need to add `@need4swede/heimdall-sso` to package.json
 
 ### 6.6 Azure App Registration for Docker
 
@@ -766,30 +792,221 @@ Before deploying to production:
 6. **Use multi-stage builds for smaller images**
 7. **Set up proper network policies**
 
+## Step 7: Debugging and Troubleshooting
+
+### 7.1 Built-in Debugging Features
+
+The integration includes comprehensive debugging features to help diagnose authentication issues:
+
+#### Server-Side Debugging
+
+**Enhanced server logging** in `server/index.ts`:
+
+```typescript
+// Environment verification on startup
+log("🔧 Initializing Heimdall SSO...");
+log(`Database URL: ${process.env.DATABASE_URL}`);
+log(`JWT Secret: ${process.env.JWT_SECRET ? '[SET]' : '[NOT SET]'}`);
+log(`Microsoft Client ID: ${process.env.MICROSOFT_CLIENT_ID ? '[SET]' : '[NOT SET]'}`);
+log(`Microsoft Tenant ID: ${process.env.MICROSOFT_TENANT_ID || 'common'}`);
+log(`Allowed Domains: ${process.env.SSO_ALLOWED_DOMAINS || '[NOT SET]'}`);
+
+// Authentication request debugging
+app.use((req, res, next) => {
+  if (req.path.startsWith('/auth')) {
+    log(`🔍 Auth request: ${req.method} ${req.path} from ${req.get('origin') || 'unknown'}`);
+    log(`🔍 Query params: ${JSON.stringify(req.query)}`);
+  }
+  next();
+});
+```
+
+#### Client-Side Debugging
+
+**Enhanced login page debugging** in `LoginPage.tsx`:
+
+```typescript
+const handleMicrosoftLogin = () => {
+  console.log("🔐 Login button clicked!");
+  console.log("🔍 Current URL:", window.location.href);
+  console.log("🔍 Redirecting to:", `/auth/oauth/microsoft`);
+  window.location.href = `/auth/oauth/microsoft`;
+};
+```
+
+### 7.2 Debugging Steps
+
+When authentication issues occur, follow these debugging steps:
+
+#### Step 1: Check Console Logs
+```bash
+# View Docker logs
+docker-compose logs -f spotlight
+
+# Look for these debug messages:
+# 🔧 Initializing Heimdall SSO...
+# 🔐 Adding Heimdall SSO routes...
+# 🔍 Auth request: GET /auth/oauth/microsoft
+```
+
+#### Step 2: Verify Environment Variables
+```bash
+# Check environment variables in Docker
+docker-compose exec spotlight env | grep -E "(JWT|MICROSOFT|SSO|DATABASE)"
+
+# Expected output:
+# DATABASE_URL=postgresql://...
+# JWT_SECRET=[SET]
+# MICROSOFT_CLIENT_ID=[SET]
+# SSO_ALLOWED_DOMAINS=njes.org
+```
+
+#### Step 3: Test Browser Console
+1. Open browser developer tools (F12)
+2. Click "Sign in with Microsoft"
+3. Check console for: `🔐 Login button clicked!`
+4. Verify redirect URL in console
+
+#### Step 4: Check Network Requests
+1. Open Network tab in browser dev tools
+2. Click login button
+3. Look for requests to `/auth/oauth/microsoft`
+4. Check response status codes
+
+#### Step 5: Verify Database Connection
+```bash
+# Connect to database
+docker-compose exec postgres psql -U spotlight_user -d spotlight
+
+# Check tables exist
+\dt
+
+# Check for users/sessions
+SELECT * FROM users LIMIT 5;
+SELECT * FROM user_sessions LIMIT 5;
+```
+
+### 7.3 Port Configuration Debugging
+
+The application uses flexible port configuration:
+
+```env
+# External port (what you access)
+FRONTEND_PORT=6011
+
+# Internal port (container runs on)
+SPOTLIGHT_PORT=5000
+
+# Access URL
+http://localhost:6011
+```
+
+**Verify port configuration:**
+```bash
+# Check Docker port mapping
+docker-compose ps
+
+# Expected output:
+# spotlight    0.0.0.0:6011->5000/tcp
+```
+
+**Common port issues:**
+- **Wrong OAuth redirect**: Ensure Azure uses `http://localhost:6011/auth/microsoft/callback`
+- **Port conflicts**: Use `netstat -tulpn | grep :6011` to check if port is in use
+- **Firewall issues**: Ensure ports 6011 and 5432 are accessible
+
+### 7.4 Dependency Resolution Debugging
+
+**Check for missing dependencies:**
+```bash
+# In Docker container
+docker-compose exec spotlight npm ls jsonwebtoken
+docker-compose exec spotlight npm ls @types/jsonwebtoken
+
+# Should show versions, not "missing"
+```
+
+**If dependencies are missing:**
+```bash
+# Rebuild with clean cache
+docker-compose down
+docker-compose build --no-cache
+docker-compose up
+```
+
 ## Troubleshooting
 
 ### Common Issues and Solutions
 
-1. **"Cannot find module '@need4swede/heimdall-sso'"**
-   - Ensure you ran `npm link` in both directories
-   - Try `npm ls @need4swede/heimdall-sso` to verify linking
+1. **"Cannot find package 'jsonwebtoken'"**
+   - ✅ **Fixed**: Added `jsonwebtoken` and `@types/jsonwebtoken` to main `package.json`
+   - **Solution**: Run `npm install` and rebuild Docker image
 
-2. **"Token has expired" errors**
-   - Check that JWT_SECRET is consistent
-   - Verify token expiration settings
+2. **Port configuration mismatch**
+   - ✅ **Fixed**: Updated Docker Compose to use flexible port mapping
+   - **Check**: Verify `FRONTEND_PORT` and `SPOTLIGHT_PORT` in `.env`
+   - **Solution**: Ensure Azure redirect URI matches external port
 
-3. **OAuth redirect fails**
-   - Check Azure redirect URIs match exactly
-   - Verify MICROSOFT_TENANT_ID is correct
+3. **"Cannot find module '@need4swede/heimdall-sso'"**
+   - ✅ **Fixed**: Using direct source imports instead of package imports
+   - **Solution**: All imports use `../heimdall-sso/src/...` format
 
-4. **"Access denied" after login**
-   - Check SSO_ALLOWED_DOMAINS includes your email domain
-   - Verify SSO_ALLOWED_EMAILS if using specific emails
+4. **Database connection errors**
+   - **Check**: Verify `DATABASE_URL` matches PostgreSQL container credentials
+   - **Solution**: Ensure `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` match in both services
 
-5. **Database connection errors**
-   - Ensure PostgreSQL is running
-   - Verify DATABASE_URL is correct
-   - Check database exists
+5. **Login button doesn't work**
+   - **Debug**: Check browser console for `🔐 Login button clicked!` message
+   - **Check**: Verify server logs show auth requests
+   - **Solution**: Clear browser cache, check for JavaScript errors
+
+6. **"Token has expired" errors**
+   - **Check**: Ensure `JWT_SECRET` is consistent across restarts
+   - **Solution**: Set a strong, permanent JWT secret in `.env`
+
+7. **OAuth redirect fails**
+   - **Check**: Azure redirect URI matches exactly: `http://localhost:6011/auth/microsoft/callback`
+   - **Verify**: `MICROSOFT_TENANT_ID` is correct for your organization
+   - **Solution**: Update Azure app registration with correct URLs
+
+8. **"Access denied" after login**
+   - **Check**: Verify your email domain is in `SSO_ALLOWED_DOMAINS`
+   - **Solution**: Add your domain or specific email to access control settings
+
+9. **Database table conflicts**
+   - **Error**: `duplicate key value violates unique constraint`
+   - **Status**: This is expected on restart - tables already exist
+   - **Result**: Application continues normally after this error
+
+### Debug Command Reference
+
+```bash
+# View all logs
+docker-compose logs -f
+
+# Check specific service
+docker-compose logs -f spotlight
+docker-compose logs -f postgres
+
+# Check container status
+docker-compose ps
+
+# Check environment variables
+docker-compose exec spotlight env | grep -E "(JWT|MICROSOFT|DATABASE)"
+
+# Connect to database
+docker-compose exec postgres psql -U spotlight_user -d spotlight
+
+# Check port usage
+netstat -tulpn | grep -E "(6011|5432)"
+
+# Restart services
+docker-compose restart
+
+# Clean rebuild
+docker-compose down
+docker-compose up --build
+```
 
 ## Summary
 
