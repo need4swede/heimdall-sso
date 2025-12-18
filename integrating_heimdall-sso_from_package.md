@@ -1,6 +1,6 @@
 # Integrating Heimdall SSO from Package - Complete Guide
 
-This guide documents the real-world integration of the `@need4swede/heimdall-sso` package into a clean Spotlight application that has no existing authentication.
+This guide documents the real-world integration of the `@need4swede/heimdall-sso` package into a clean application that has no existing authentication.
 
 ## Prerequisites
 
@@ -51,7 +51,7 @@ import { useAuth } from "../../heimdall-sso/src/client/useAuth";
 
 ### 2.1 Install Required Dependencies
 
-The Spotlight app needs additional dependencies for Heimdall SSO integration:
+The target app needs additional dependencies for Heimdall SSO integration:
 
 ```bash
 # Basic dependencies for server-side authentication
@@ -111,7 +111,7 @@ app.use(cookieParser()); // Required for JWT tokens in cookies
 const heimdall = initializeHeimdallSSO({
   database: {
     connectionString: process.env.DATABASE_URL ||
-      "postgresql://postgres:password@localhost:5432/spotlight",
+      "postgresql://postgres:password@localhost:5432/app",
   },
   jwt: {
     secret: process.env.JWT_SECRET ||
@@ -130,8 +130,8 @@ const heimdall = initializeHeimdallSSO({
     allowedEmails: process.env.SSO_ALLOWED_EMAILS?.split(",") || [],
   },
   branding: {
-    companyName: "Spotlight",
-    loginTitle: "Welcome to Spotlight",
+    companyName: "app",
+    loginTitle: "Welcome to app",
     loginSubtitle: "Sign in to continue",
   },
 });
@@ -295,7 +295,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold">
-            {config?.branding?.loginTitle || "Welcome to Spotlight"}
+            {config?.branding?.loginTitle || "Welcome to app"}
           </CardTitle>
           <CardDescription>
             {config?.branding?.loginSubtitle || "Sign in to continue"}
@@ -342,7 +342,7 @@ export function Header() {
   return (
     <header className="border-b">
       <div className="container mx-auto px-4 py-3 flex justify-between items-center">
-        <h1 className="text-xl font-bold">Spotlight</h1>
+        <h1 className="text-xl font-bold">app</h1>
 
         {user && (
           <div className="flex items-center gap-4">
@@ -373,7 +373,7 @@ Ensure your `.env` file has all required variables:
 
 ```env
 # Database
-DATABASE_URL=postgresql://postgres:password@localhost:5432/spotlight
+DATABASE_URL=postgresql://postgres:password@localhost:5432/app
 
 # JWT Configuration
 JWT_SECRET=your-super-secret-key-that-is-at-least-32-characters-long-for-security
@@ -433,11 +433,443 @@ SELECT * FROM users;
 SELECT * FROM user_sessions;
 ```
 
-## Step 6: Docker Deployment
+## Step 6: Configuration-Based Branding
+
+### 6.1 Understanding the Configuration System
+
+The app application now uses a comprehensive configuration system that allows complete customization of the login experience without code changes. The configuration is defined in `config.json` and automatically served to the frontend through the `/auth/config` endpoint.
+
+#### Configuration File Structure (`config.json`)
+
+```json
+{
+    "providers": {
+        "microsoft": {
+            "enabled": true,
+            "displayName": "Microsoft",
+            "clientId": "${MICROSOFT_CLIENT_ID}",
+            "clientSecret": "${MICROSOFT_CLIENT_SECRET}",
+            "tenantId": "${MICROSOFT_TENANT_ID}",
+            "buttonText": "Sign in with Microsoft",
+            "logo": {
+                "enabled": true,
+                "iconName": "custom",
+                "customUrl": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/44/Microsoft_logo.svg/512px-Microsoft_logo.svg.png",
+                "centerText": false
+            }
+        },
+        "google": {
+            "enabled": false,
+            "displayName": "Google",
+            "clientId": "${GOOGLE_CLIENT_ID}",
+            "clientSecret": "${GOOGLE_CLIENT_SECRET}",
+            "buttonText": "",
+            "logo": {
+                "enabled": true,
+                "iconName": "custom",
+                "customUrl": "https://developers.google.com/identity/images/g-logo.png",
+                "centerText": false
+            }
+        }
+    },
+    "accessControl": {
+        "domainMode": "allow-list",
+        "emailMode": "allow-list",
+        "allowedDomains": "${SSO_ALLOWED_DOMAINS}",
+        "allowedEmails": "${SSO_ALLOWED_EMAILS}",
+        "requireEmailVerification": false
+    },
+    "branding": {
+        "companyName": "${REACT_APP_COMPANY_NAME}",
+        "logoUrl": "",
+        "primaryColor": "${REACT_APP_PRIMARY_COLOR}",
+        "loginTitle": "${REACT_APP_LOGIN_TITLE}",
+        "loginSubtitle": "${REACT_APP_LOGIN_SUBTITLE}",
+        "customCss": "",
+        "footer": "${REACT_APP_LOGIN_FOOTER}"
+    },
+    "features": {
+        "enableEmailLogin": false,
+        "enableRememberMe": true,
+        "sessionTimeout": 604800,
+        "allowSelfRegistration": false
+    },
+    "security": {
+        "requireHttps": false,
+        "enableRateLimit": true,
+        "maxLoginAttempts": 5,
+        "lockoutDuration": 900
+    }
+}
+```
+
+#### Environment Variable Substitution
+
+The configuration system supports environment variable substitution using the `${VARIABLE_NAME}` syntax. This allows you to:
+
+- **Keep sensitive data out of config files**
+- **Use different configurations per environment**
+- **Dynamically configure branding per deployment**
+
+**Example environment variables for branding:**
+
+```env
+# Branding Configuration
+REACT_APP_COMPANY_NAME=Your Company Name
+REACT_APP_LOGIN_TITLE=Welcome to Your Platform
+REACT_APP_LOGIN_SUBTITLE=Sign in to access your account
+REACT_APP_PRIMARY_COLOR=#1e40af
+REACT_APP_LOGIN_FOOTER=Secured by enterprise-grade authentication
+
+# OAuth Configuration
+MICROSOFT_CLIENT_ID=your-azure-client-id
+MICROSOFT_TENANT_ID=your-tenant-id-or-common
+SSO_ALLOWED_DOMAINS=yourcompany.com,partner.org
+```
+
+### 6.2 Updated LoginPage Implementation
+
+The LoginPage component has been completely rewritten to be fully configuration-driven:
+
+#### Key Features
+
+1. **Dynamic Logo Support**: Can use custom logos or fallback to branded icon
+2. **Custom CSS Injection**: Allows complete styling customization
+3. **Configurable Text**: All text elements are configurable
+4. **Environment-Aware**: Loads configuration from server at runtime
+5. **Fallback Handling**: Graceful degradation when config is unavailable
+
+#### Updated LoginPage.tsx
+
+```tsx
+import { useState } from "react";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Card, CardContent, CardHeader } from "../ui/card";
+import { Separator } from "../ui/separator";
+import { Loader2, Shield } from "lucide-react";
+import { useAuth } from "./HeimdallProvider";
+import { OAuthButton } from "./OAuthButton";
+
+export function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [isEmailLoading, setIsEmailLoading] = useState(false);
+  const { login, isLoading, loginError, clearLoginError, ssoConfig } = useAuth();
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) return;
+
+    setIsEmailLoading(true);
+    try {
+      await login("email", { email, code: "magic_link_" + Date.now() });
+    } catch (error) {
+      console.error("Email login failed:", error);
+    } finally {
+      setIsEmailLoading(false);
+    }
+  };
+
+  // Use the SSO configuration loaded from the server
+  const config = ssoConfig || {
+    providers: {},
+    branding: {
+      companyName: "app",
+      loginTitle: "Welcome to app",
+      loginSubtitle: "Sign in to your account",
+      primaryColor: "#2563eb",
+      footer: "Protected by enterprise-grade security",
+      logoUrl: "",
+      customCss: ""
+    },
+    features: {
+      enableEmailLogin: false
+    }
+  };
+
+  const enabledProviders = Object.entries(config.providers || {}).filter(
+    ([_, provider]: [string, any]) => provider?.enabled
+  );
+
+  const hasOAuthProviders = enabledProviders.length > 0;
+
+  // Show loading state while config is being loaded
+  if (!ssoConfig && isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <Card className="w-full max-w-md shadow-xl border-0">
+          <CardContent className="flex items-center justify-center p-8">
+            <div className="flex items-center space-x-2">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <span className="text-gray-600">Loading...</span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      {/* Inject custom CSS if provided */}
+      {config.branding?.customCss && (
+        <style dangerouslySetInnerHTML={{ __html: config.branding.customCss }} />
+      )}
+
+      <Card className="w-full max-w-md shadow-xl border-0">
+        <CardHeader className="space-y-6 pb-8">
+          <div className="text-center space-y-4">
+            {/* Logo section - use custom logo if provided, otherwise use icon with primary color */}
+            {config.branding?.logoUrl ? (
+              <div className="w-16 h-16 mx-auto flex items-center justify-center">
+                <img
+                  src={config.branding.logoUrl}
+                  alt={config.branding?.companyName || 'Company Logo'}
+                  className="max-w-full max-h-full object-contain"
+                  onError={(e) => {
+                    // Fallback to Shield icon if logo fails to load
+                    e.currentTarget.style.display = 'none';
+                    const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                    if (fallback) fallback.style.display = 'flex';
+                  }}
+                />
+                <div
+                  className="w-16 h-16 rounded-xl items-center justify-center hidden"
+                  style={{ backgroundColor: config.branding?.primaryColor || '#2563eb' }}
+                >
+                  <Shield className="w-8 h-8 text-white" />
+                </div>
+              </div>
+            ) : (
+              <div
+                className="w-16 h-16 mx-auto rounded-xl flex items-center justify-center"
+                style={{ backgroundColor: config.branding?.primaryColor || '#2563eb' }}
+              >
+                <Shield className="w-8 h-8 text-white" />
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <h1 className="text-2xl font-bold text-gray-900">
+                {config.branding?.loginTitle || `Welcome to ${config.branding?.companyName || 'Our Platform'}`}
+              </h1>
+              <p className="text-gray-600">
+                {config.branding?.loginSubtitle || 'Sign in to continue'}
+              </p>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="space-y-6">
+          {loginError ? (
+            <div className="space-y-6">
+              <div className="text-center space-y-4">
+                <div className="space-y-2">
+                  <h2 className="text-xl font-semibold text-red-600">
+                    Access Denied
+                  </h2>
+                  <p className="text-gray-600 text-sm">
+                    {loginError}
+                  </p>
+                </div>
+              </div>
+              <Button
+                onClick={clearLoginError}
+                className="w-full h-12 font-medium"
+                variant="outline"
+              >
+                Try Again
+              </Button>
+              <div className="text-center text-sm text-gray-500">
+                {config.branding?.footer || 'Protected by enterprise-grade security'}
+              </div>
+            </div>
+          ) : (
+            <>
+              {hasOAuthProviders && (
+                <div className="space-y-3">
+                  {enabledProviders.map(([providerName, provider]: [string, any]) => (
+                    <OAuthButton
+                      key={providerName}
+                      provider={providerName}
+                      displayName={provider?.displayName || providerName}
+                      clientId={provider?.clientId || ''}
+                      tenantId={provider?.tenantId}
+                      buttonText={provider?.buttonText}
+                      logo={provider?.logo}
+                      disabled={isLoading}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {hasOAuthProviders && config.features?.enableEmailLogin && (
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <Separator className="w-full" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white px-2 text-gray-500">or</span>
+                  </div>
+                </div>
+              )}
+
+              {config.features?.enableEmailLogin && (
+                <form onSubmit={handleEmailLogin} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">
+                      Email address
+                    </label>
+                    <Input
+                      type="email"
+                      placeholder="Enter your email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                      disabled={isLoading}
+                      className="h-12"
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    className="w-full h-12 font-medium"
+                    disabled={isLoading || isEmailLoading || !email}
+                    style={{ backgroundColor: config.branding?.primaryColor || '#2563eb' }}
+                  >
+                    {isEmailLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    ) : null}
+                    Send Magic Link
+                  </Button>
+                </form>
+              )}
+
+              <div className="text-center text-sm text-gray-500">
+                {config.branding?.footer || 'Protected by enterprise-grade security'}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+```
+
+### 6.3 Configuration Loading Flow
+
+The configuration is loaded automatically through the following flow:
+
+1. **Server Startup**: Server reads `config.json` and processes environment variables
+2. **Config Endpoint**: Server exposes configuration at `/auth/config`
+3. **Frontend Loading**: HeimdallProvider fetches config on initialization
+4. **Component Rendering**: LoginPage uses the loaded configuration
+
+#### HeimdallProvider Configuration Loading
+
+```tsx
+// Load SSO configuration
+useEffect(() => {
+  const loadConfig = async () => {
+    try {
+      const response = await fetch('/auth/config');
+      if (response.ok) {
+        const configData = await response.json();
+        setSsoConfig(configData);
+      }
+    } catch (error) {
+      console.error('Failed to load SSO config:', error);
+    }
+  };
+
+  loadConfig();
+}, []);
+```
+
+### 6.4 Customization Examples
+
+#### Example 1: Custom Branding with Logo
+
+```env
+# Complete branding customization
+REACT_APP_COMPANY_NAME=Acme Corporation
+REACT_APP_LOGIN_TITLE=Welcome to Acme Portal
+REACT_APP_LOGIN_SUBTITLE=Access your business applications
+REACT_APP_PRIMARY_COLOR=#dc2626
+REACT_APP_LOGIN_FOOTER=© 2024 Acme Corp. All rights reserved.
+```
+
+```json
+{
+  "branding": {
+    "companyName": "${REACT_APP_COMPANY_NAME}",
+    "logoUrl": "https://your-cdn.com/logo.png",
+    "primaryColor": "${REACT_APP_PRIMARY_COLOR}",
+    "loginTitle": "${REACT_APP_LOGIN_TITLE}",
+    "loginSubtitle": "${REACT_APP_LOGIN_SUBTITLE}",
+    "footer": "${REACT_APP_LOGIN_FOOTER}"
+  }
+}
+```
+
+#### Example 2: Custom CSS Styling
+
+```json
+{
+  "branding": {
+    "customCss": ".login-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); } .login-title { color: white; }"
+  }
+}
+```
+
+#### Example 3: Multiple OAuth Providers
+
+```json
+{
+  "providers": {
+    "microsoft": {
+      "enabled": true,
+      "displayName": "Microsoft 365",
+      "buttonText": "Continue with Microsoft 365"
+    },
+    "google": {
+      "enabled": true,
+      "displayName": "Google Workspace",
+      "buttonText": "Continue with Google"
+    }
+  }
+}
+```
+
+### 6.5 Configuration Best Practices
+
+1. **Environment Variables**: Use environment variables for sensitive data and environment-specific values
+2. **Logo URLs**: Use CDN or secure hosting for logo images
+3. **Custom CSS**: Keep custom CSS minimal and test across browsers
+4. **Fallbacks**: Always provide fallback values in case environment variables are missing
+5. **Validation**: Validate configuration values on server startup
+
+### 6.6 Testing Configuration Changes
+
+```bash
+# 1. Update environment variables
+echo "REACT_APP_COMPANY_NAME=New Company" >> .env
+
+# 2. Restart Docker containers
+docker-compose down && docker-compose up -d
+
+# 3. Verify config endpoint
+curl http://localhost:6011/auth/config | jq .branding
+
+# 4. Test in browser
+# Navigate to http://localhost:6011 and verify changes
+```
+
+## Step 7: Docker Deployment
 
 ### 6.1 Docker Compose Configuration
 
-The Spotlight application now includes complete Docker Compose configurations for both development and production environments with PostgreSQL and Heimdall SSO support.
+The app application now includes complete Docker Compose configurations for both development and production environments with PostgreSQL and Heimdall SSO support.
 
 #### Production Configuration (`docker-compose.yml`)
 
@@ -445,14 +877,14 @@ The Spotlight application now includes complete Docker Compose configurations fo
 version: '3.8'
 
 services:
-  spotlight:
-    container_name: spotlight
+  app:
+    container_name: app
     build: .
     ports:
-      - "${FRONTEND_PORT:-6011}:${SPOTLIGHT_PORT:-5000}"
+      - "${FRONTEND_PORT:-6011}:${app_PORT:-5000}"
     environment:
       - NODE_ENV=production
-      - PORT=${SPOTLIGHT_PORT:-5000}
+      - PORT=${app_PORT:-5000}
       - HOST=0.0.0.0
       # PostgreSQL Database (required for Heimdall SSO)
       - DATABASE_URL=${DATABASE_URL}
@@ -477,7 +909,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    container_name: spotlight-postgres
+    container_name: app-postgres
     image: postgres:15-alpine
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
@@ -495,7 +927,7 @@ volumes:
 ```
 
 **Key Configuration Changes:**
-- ✅ **Flexible Port Mapping**: `FRONTEND_PORT:SPOTLIGHT_PORT` (e.g., `6011:5000`)
+- ✅ **Flexible Port Mapping**: `FRONTEND_PORT:app_PORT` (e.g., `6011:5000`)
 - ✅ **Environment Variable Integration**: Uses `.env` file values directly
 - ✅ **Custom Database Credentials**: Supports custom PostgreSQL user/password
 - ✅ **Port Isolation**: External and internal ports can be different
@@ -517,7 +949,7 @@ services:
       - PORT=5000
 
       # PostgreSQL Database (required for Heimdall SSO)
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/spotlight_dev
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/app_dev
 
       # Heimdall SSO Configuration
       - JWT_SECRET=${JWT_SECRET:-development-jwt-secret-at-least-32-characters-long}
@@ -544,7 +976,7 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_DB=spotlight_dev
+      - POSTGRES_DB=app_dev
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
@@ -574,7 +1006,7 @@ SSO_ALLOWED_DOMAINS=yourdomain.com,partnerdomain.com
 SSO_ALLOWED_EMAILS=external.user@gmail.com
 
 # Database configuration
-POSTGRES_DB=spotlight
+POSTGRES_DB=app
 POSTGRES_PASSWORD=secure-postgres-password
 
 # Email configuration
@@ -615,7 +1047,7 @@ docker-compose up --build
 docker-compose up -d --build
 
 # View logs
-docker-compose logs -f spotlight
+docker-compose logs -f app
 
 # Stop services
 docker-compose down
@@ -636,7 +1068,7 @@ The Docker setup automatically initializes the PostgreSQL database:
 
 ```bash
 # Connect to the database
-docker-compose exec postgres psql -U postgres -d spotlight
+docker-compose exec postgres psql -U postgres -d app
 
 # View Heimdall SSO tables
 \dt
@@ -714,10 +1146,10 @@ curl http://localhost:5000/api/health
 docker-compose exec postgres pg_isready -U postgres
 
 # View application logs
-docker-compose logs -f spotlight
+docker-compose logs -f app
 
 # Monitor resource usage
-docker stats spotlight spotlight-postgres
+docker stats app app-postgres
 ```
 
 ### 6.8 Docker Troubleshooting
@@ -727,10 +1159,10 @@ docker stats spotlight spotlight-postgres
 **1. Authentication not working in Docker:**
 ```bash
 # Check environment variables
-docker-compose exec spotlight env | grep -E "(JWT|MICROSOFT|SSO)"
+docker-compose exec app env | grep -E "(JWT|MICROSOFT|SSO)"
 
 # Verify database connection
-docker-compose exec spotlight npm run db:check
+docker-compose exec app npm run db:check
 ```
 
 **2. Database connection failed:**
@@ -742,7 +1174,7 @@ docker-compose ps postgres
 docker-compose logs postgres
 
 # Verify network connectivity
-docker-compose exec spotlight ping postgres
+docker-compose exec app ping postgres
 ```
 
 **3. OAuth redirect issues:**
@@ -758,13 +1190,13 @@ curl -I http://localhost:5000/auth/microsoft/callback
 docker volume ls
 
 # Inspect volume
-docker volume inspect spotlight_postgres_data
+docker volume inspect app_postgres_data
 
 # Backup database
-docker-compose exec postgres pg_dump -U postgres spotlight > backup.sql
+docker-compose exec postgres pg_dump -U postgres app > backup.sql
 
 # Restore database
-cat backup.sql | docker-compose exec -T postgres psql -U postgres spotlight
+cat backup.sql | docker-compose exec -T postgres psql -U postgres app
 ```
 
 ### 6.9 Production Deployment Checklist
@@ -841,7 +1273,7 @@ When authentication issues occur, follow these debugging steps:
 #### Step 1: Check Console Logs
 ```bash
 # View Docker logs
-docker-compose logs -f spotlight
+docker-compose logs -f app
 
 # Look for these debug messages:
 # 🔧 Initializing Heimdall SSO...
@@ -852,7 +1284,7 @@ docker-compose logs -f spotlight
 #### Step 2: Verify Environment Variables
 ```bash
 # Check environment variables in Docker
-docker-compose exec spotlight env | grep -E "(JWT|MICROSOFT|SSO|DATABASE)"
+docker-compose exec app env | grep -E "(JWT|MICROSOFT|SSO|DATABASE)"
 
 # Expected output:
 # DATABASE_URL=postgresql://...
@@ -876,7 +1308,7 @@ docker-compose exec spotlight env | grep -E "(JWT|MICROSOFT|SSO|DATABASE)"
 #### Step 5: Verify Database Connection
 ```bash
 # Connect to database
-docker-compose exec postgres psql -U spotlight_user -d spotlight
+docker-compose exec postgres psql -U app_user -d app
 
 # Check tables exist
 \dt
@@ -895,7 +1327,7 @@ The application uses flexible port configuration:
 FRONTEND_PORT=6011
 
 # Internal port (container runs on)
-SPOTLIGHT_PORT=5000
+app_PORT=5000
 
 # Access URL
 http://localhost:6011
@@ -907,7 +1339,7 @@ http://localhost:6011
 docker-compose ps
 
 # Expected output:
-# spotlight    0.0.0.0:6011->5000/tcp
+# app    0.0.0.0:6011->5000/tcp
 ```
 
 **Common port issues:**
@@ -920,8 +1352,8 @@ docker-compose ps
 **Check for missing dependencies:**
 ```bash
 # In Docker container
-docker-compose exec spotlight npm ls jsonwebtoken
-docker-compose exec spotlight npm ls @types/jsonwebtoken
+docker-compose exec app npm ls jsonwebtoken
+docker-compose exec app npm ls @types/jsonwebtoken
 
 # Should show versions, not "missing"
 ```
@@ -944,7 +1376,7 @@ docker-compose up
 
 2. **Port configuration mismatch**
    - ✅ **Fixed**: Updated Docker Compose to use flexible port mapping
-   - **Check**: Verify `FRONTEND_PORT` and `SPOTLIGHT_PORT` in `.env`
+   - **Check**: Verify `FRONTEND_PORT` and `app_PORT` in `.env`
    - **Solution**: Ensure Azure redirect URI matches external port
 
 3. **"Cannot find module '@need4swede/heimdall-sso'"**
@@ -964,19 +1396,25 @@ docker-compose up
    - **Check**: Ensure `JWT_SECRET` is consistent across restarts
    - **Solution**: Set a strong, permanent JWT secret in `.env`
 
-7. **OAuth redirect fails**
+7. **OAuth callback URL only shows base URL** (e.g., `http://localhost:6011` instead of `http://localhost:6011/auth/microsoft/callback`)
+   - **Root Cause**: Default `redirectUri` in `MicrosoftOAuthService.fromConfig()` was missing the callback path
+   - **Fix Applied**: Updated default from `${window.location.origin}` to `${window.location.origin}/auth/microsoft/callback`
+   - **Location**: `client/src/lib/microsoft-oauth.ts` in the `fromConfig` method
+   - **Status**: ✅ **FIXED** - Callback URL now correctly includes the full path
+
+8. **OAuth redirect fails**
    - **Check**: Azure redirect URI matches exactly: `http://localhost:6011/auth/microsoft/callback`
    - **Verify**: `MICROSOFT_TENANT_ID` is correct for your organization
    - **Solution**: Update Azure app registration with correct URLs
 
-8. **"Access denied" after login**
+9. **"Access denied" after login**
    - **Check**: Verify your email domain is in `SSO_ALLOWED_DOMAINS`
    - **Solution**: Add your domain or specific email to access control settings
 
-9. **Database table conflicts**
-   - **Error**: `duplicate key value violates unique constraint`
-   - **Status**: This is expected on restart - tables already exist
-   - **Result**: Application continues normally after this error
+10. **Database table conflicts**
+    - **Error**: `duplicate key value violates unique constraint`
+    - **Status**: This is expected on restart - tables already exist
+    - **Result**: Application continues normally after this error
 
 ### Debug Command Reference
 
@@ -985,17 +1423,17 @@ docker-compose up
 docker-compose logs -f
 
 # Check specific service
-docker-compose logs -f spotlight
+docker-compose logs -f app
 docker-compose logs -f postgres
 
 # Check container status
 docker-compose ps
 
 # Check environment variables
-docker-compose exec spotlight env | grep -E "(JWT|MICROSOFT|DATABASE)"
+docker-compose exec app env | grep -E "(JWT|MICROSOFT|DATABASE)"
 
 # Connect to database
-docker-compose exec postgres psql -U spotlight_user -d spotlight
+docker-compose exec postgres psql -U app_user -d app
 
 # Check port usage
 netstat -tulpn | grep -E "(6011|5432)"
